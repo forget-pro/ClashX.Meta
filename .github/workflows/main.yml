@@ -6,8 +6,75 @@ on:
   workflow_dispatch:
     inputs:
       logLevel:
+  schedule:
+    - cron: '0 0 * * *'  # 每天午夜检查一次
 
 jobs:
+  check-meta-update:
+    runs-on: ubuntu-latest
+    outputs:
+      new-version: ${{ steps.check.outputs.new-version }}
+      meta-version: ${{ steps.check.outputs.meta-version }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Check MetaCubeX/mihomo updates
+      id: check
+      run: |
+        # 获取MetaCubeX/mihomo的最新tag
+        LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+        echo "meta-version=${LATEST_TAG}" >> $GITHUB_OUTPUT
+        echo "Latest MetaCubeX/mihomo version: ${LATEST_TAG}"
+        
+        # 获取本仓库最后一次使用的meta core版本（从Info.plist或最新tag的message）
+        if [ -f "ClashX/Info.plist" ]; then
+          CURRENT_VERSION=$(grep -A1 "coreVersion" ClashX/Info.plist | grep "<string>" | sed 's/.*<string>\(.*\)<\/string>.*/\1/' || echo "")
+        fi
+        
+        # 从git tag message中获取最近使用的meta版本（如果有的话）
+        if [ -z "$CURRENT_VERSION" ]; then
+          CURRENT_VERSION=$(git tag -l "v*" --sort=-version:refname --merged | head -1 | xargs -I {} git tag -l {} --format='%(contents)' 2>/dev/null | grep -o "meta-.*" | head -1 || echo "")
+        fi
+        
+        echo "Current meta core version: ${CURRENT_VERSION}"
+        
+        # 比较版本，如果不同则标记为需要更新
+        if [ "${LATEST_TAG}" != "${CURRENT_VERSION}" ]; then
+          echo "new-version=true" >> $GITHUB_OUTPUT
+          echo "Found new version: ${LATEST_TAG}"
+        else
+          echo "new-version=false" >> $GITHUB_OUTPUT
+          echo "Already on latest version"
+        fi
+
+    - name: Auto create tag to trigger build
+      if: steps.check.outputs.new-version == 'true'
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        
+        # 获取最后一个版本号
+        LAST_TAG=$(git tag -l "v*" --sort=-version:refname | head -1)
+        LAST_VERSION=$(echo $LAST_TAG | sed 's/v//')
+        
+        # 生成新版本号（增加patch版本）
+        if [[ $LAST_VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+          MAJOR=${BASH_REMATCH[1]}
+          MINOR=${BASH_REMATCH[2]}
+          PATCH=${BASH_REMATCH[3]}
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+        else
+          NEW_VERSION="v1.0.0"
+        fi
+        
+        # 创建tag并推送
+        git tag -a "${NEW_VERSION}" -m "Auto update: MetaCubeX/mihomo ${{ steps.check.outputs.meta-version }}"
+        git push origin "${NEW_VERSION}"
+        echo "Created new tag: ${NEW_VERSION}"
+
   build:
     runs-on: macos-26
     steps:
@@ -19,11 +86,18 @@ jobs:
       with:
         fetch-depth: 0
 
+    - name: Get latest MetaCubeX/mihomo tag
+      id: get-tag
+      run: |
+        LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+        echo "latest-tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+        echo "Latest tag: ${LATEST_TAG}"
+
     - name: download meta core
       uses: robinraju/release-downloader@v1.12
       with:
         repository: 'MetaCubeX/mihomo'
-        tag: "v1.19.18"
+        tag: ${{ steps.get-tag.outputs.latest-tag }}
         fileName: "mihomo-darwin-???64-v?.*.*.gz"
 
         # releaseId: "62870807"
