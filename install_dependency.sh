@@ -28,8 +28,12 @@ lipo -create -output com.metacubex.ClashX.ProxyConfigHelper.meta mihomo-darwin-a
 chmod +x com.metacubex.ClashX.ProxyConfigHelper.meta
 
 echo "Update meta core md5 to code"
-sed -i '' "s/WOSHIZIDONGSHENGCHENGDEA/$(md5 -q com.metacubex.ClashX.ProxyConfigHelper.meta)/g" ../ClashX/AppDelegate.swift
-sed -n '20p' ../ClashX/AppDelegate.swift
+CORE_MD5=$(md5 -q com.metacubex.ClashX.ProxyConfigHelper.meta)
+echo "Core MD5: ${CORE_MD5}"
+# 替换 MetaCoreMd5 常量的值，无论是占位符还是已有的 MD5
+sed -i '' -E "s/(private let MetaCoreMd5 = \")[^\"]*(\")$/\1${CORE_MD5}\2/" ../ClashX/AppDelegate.swift
+echo "Updated line:"
+grep "MetaCoreMd5" ../ClashX/AppDelegate.swift
 
 echo "Gzip Universal core"
 gzip com.metacubex.ClashX.ProxyConfigHelper.meta
