@@ -90,10 +90,23 @@ jobs:
 
     - name: Get latest MetaCubeX/mihomo tag
       id: get-tag
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+        # 使用 GitHub CLI 获取最新 tag（更可靠）
+        LATEST_TAG=$(gh release view --repo MetaCubeX/mihomo --json tagName --jq '.tagName')
         echo "latest-tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
         echo "Latest tag: ${LATEST_TAG}"
+        
+        # 备用方案：使用 curl + jq
+        if [ -z "$LATEST_TAG" ]; then
+          echo "Trying backup method with curl..."
+          LATEST_TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | \
+            jq -r '.tag_name')
+          echo "latest-tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+          echo "Latest tag (backup): ${LATEST_TAG}"
+        fi
 
     - name: download meta core
       uses: robinraju/release-downloader@v1.12
@@ -101,10 +114,6 @@ jobs:
         repository: 'MetaCubeX/mihomo'
         tag: ${{ steps.get-tag.outputs.latest-tag }}
         fileName: "mihomo-darwin-???64-v?.*.*.gz"
-
-        # releaseId: "62870807"
-        # fileName: ".*darwin.*64-alpha.*.gz"
-        
         out-file-path: "clash.meta"
         token: ${{ secrets.GITHUB_TOKEN }}
 
