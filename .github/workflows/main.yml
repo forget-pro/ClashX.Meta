@@ -12,9 +12,11 @@ on:
 jobs:
   check-meta-update:
     runs-on: ubuntu-latest
+    # 只在定时任务和手动触发时运行检查
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     outputs:
-      new-version: ${{ steps.check.outputs.new-version }}
-      meta-version: ${{ steps.check.outputs.meta-version }}
+      has-update: ${{ steps.check.outputs.has-update }}
+      latest-tag: ${{ steps.check.outputs.latest-tag }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -22,63 +24,86 @@ jobs:
 
     - name: Check MetaCubeX/mihomo updates
       id: check
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # 获取MetaCubeX/mihomo的最新tag
-        LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name"' | head -1 | cut -d'"' -f4)
-        echo "meta-version=${LATEST_TAG}" >> $GITHUB_OUTPUT
+        # 获取MetaCubeX/mihomo的最新release版本
+        LATEST_TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | jq -r '.tag_name')
         echo "Latest MetaCubeX/mihomo version: ${LATEST_TAG}"
         
-        # 获取本仓库最后一次使用的meta core版本（从Info.plist或最新tag的message）
-        if [ -f "ClashX/Info.plist" ]; then
-          CURRENT_VERSION=$(grep -A1 "coreVersion" ClashX/Info.plist | grep "<string>" | sed 's/.*<string>\(.*\)<\/string>.*/\1/' || echo "")
-        fi
-        
-        # 从git tag message中获取最近使用的meta版本（如果有的话）
-        if [ -z "$CURRENT_VERSION" ]; then
-          CURRENT_VERSION=$(git tag -l "v*" --sort=-version:refname --merged | head -1 | xargs -I {} git tag -l {} --format='%(contents)' 2>/dev/null | grep -o "meta-.*" | head -1 || echo "")
-        fi
-        
-        echo "Current meta core version: ${CURRENT_VERSION}"
-        
-        # 比较版本，如果不同则标记为需要更新
-        if [ "${LATEST_TAG}" != "${CURRENT_VERSION}" ]; then
-          echo "new-version=true" >> $GITHUB_OUTPUT
-          echo "Found new version: ${LATEST_TAG}"
+        # 从版本文件中读取当前使用的 mihomo 版本
+        if [ -f ".mihomo-version" ]; then
+          CURRENT_VERSION=$(cat .mihomo-version | tr -d '\n\r' || echo "")
         else
-          echo "new-version=false" >> $GITHUB_OUTPUT
-          echo "Already on latest version"
+          # 尝试从最新的 tag message 中读取（兼容旧版本）
+          LAST_TAG=$(git tag -l "v*" --sort=-version:refname | head -1)
+          if [ -n "$LAST_TAG" ]; then
+            CURRENT_VERSION=$(git tag -l "$LAST_TAG" --format='%(contents)' | grep -oP 'MetaCubeX/mihomo \K.*' || echo "")
+          else
+            CURRENT_VERSION=""
+          fi
         fi
-
-    - name: Auto create tag to trigger build
-      if: steps.check.outputs.new-version == 'true'
-      run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
         
-        # 获取最后一个版本号
-        LAST_TAG=$(git tag -l "v*" --sort=-version:refname | head -1)
-        LAST_VERSION=$(echo $LAST_TAG | sed 's/v//')
+        echo "Current mihomo version: ${CURRENT_VERSION}"
         
-        # 生成新版本号（增加patch版本）
-        if [[ $LAST_VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-          MAJOR=${BASH_REMATCH[1]}
-          MINOR=${BASH_REMATCH[2]}
-          PATCH=${BASH_REMATCH[3]}
-          NEW_PATCH=$((PATCH + 1))
-          NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+        # 比较版本，如果不同则创建新tag
+        if [ -z "${CURRENT_VERSION}" ]; then
+          echo "No current version found, will create initial tag"
+          SHOULD_UPDATE=true
+        elif [ "${LATEST_TAG}" != "${CURRENT_VERSION}" ]; then
+          echo "Found new version: ${LATEST_TAG} (current: ${CURRENT_VERSION})"
+          SHOULD_UPDATE=true
         else
-          NEW_VERSION="v1.0.0"
+          echo "Already on latest version: ${CURRENT_VERSION}"
+          SHOULD_UPDATE=false
         fi
         
-        # 创建tag并推送
-        git tag -a "${NEW_VERSION}" -m "Auto update: MetaCubeX/mihomo ${{ steps.check.outputs.meta-version }}"
-        git push origin "${NEW_VERSION}"
-        echo "Created new tag: ${NEW_VERSION}"
+        # 输出检测结果
+        echo "has-update=${SHOULD_UPDATE}" >> $GITHUB_OUTPUT
+        echo "latest-tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+        
+        # 如果需要更新，创建新tag
+        if [ "${SHOULD_UPDATE}" = true ]; then
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          # 获取最后一个版本号
+          LAST_TAG=$(git tag -l "v*" --sort=-version:refname | head -1)
+          if [ -z "$LAST_TAG" ]; then
+            NEW_VERSION="v1.0.0"
+          else
+            LAST_VERSION=$(echo $LAST_TAG | sed 's/v//')
+            
+            # 生成新版本号（增加patch版本）
+            if [[ $LAST_VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              MAJOR=${BASH_REMATCH[1]}
+              MINOR=${BASH_REMATCH[2]}
+              PATCH=${BASH_REMATCH[3]}
+              NEW_PATCH=$((PATCH + 1))
+              NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+            else
+              NEW_VERSION="v1.0.0"
+            fi
+          fi
+          
+          # 创建tag并推送（这会触发tag push事件）
+          git tag -a "${NEW_VERSION}" -m "Auto update: MetaCubeX/mihomo ${LATEST_TAG}"
+          git push origin "${NEW_VERSION}"
+          echo "Created and pushed new tag: ${NEW_VERSION}"
+        else
+          echo "No update needed, skipping tag creation"
+        fi
 
   build:
     runs-on: macos-26
-    needs: check-meta-update
-    if: needs.check-meta-update.outputs.new-version == 'true' || github.event_name == 'workflow_dispatch'
+    needs: [check-meta-update]
+    # 只在以下情况构建：1) tag push触发 2) 手动触发 3) 定时任务检测到新版本
+    if: |
+      always() && (
+        startsWith(github.ref, 'refs/tags/v') ||
+        (github.event_name == 'workflow_dispatch') ||
+        (needs.check-meta-update.result == 'success' && needs.check-meta-update.outputs.has-update == 'true')
+      )
     steps:
     - uses: maxim-lobanov/setup-xcode@v1
       with:
@@ -93,19 +118,26 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # 使用 GitHub CLI 获取最新 tag（更可靠）
-        LATEST_TAG=$(gh release view --repo MetaCubeX/mihomo --json tagName --jq '.tagName')
-        echo "latest-tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
-        echo "Latest tag: ${LATEST_TAG}"
-        
-        # 备用方案：使用 curl + jq
-        if [ -z "$LATEST_TAG" ]; then
-          echo "Trying backup method with curl..."
-          LATEST_TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | \
-            jq -r '.tag_name')
+        # 如果是从 check-meta-update 传过来的，直接使用
+        if [ -n "${{ needs.check-meta-update.outputs.latest-tag }}" ]; then
+          LATEST_TAG="${{ needs.check-meta-update.outputs.latest-tag }}"
           echo "latest-tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
-          echo "Latest tag (backup): ${LATEST_TAG}"
+          echo "Using tag from check job: ${LATEST_TAG}"
+        else
+          # 使用 GitHub CLI 获取最新 tag（更可靠）
+          LATEST_TAG=$(gh release view --repo MetaCubeX/mihomo --json tagName --jq '.tagName')
+          echo "latest-tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+          echo "Latest tag: ${LATEST_TAG}"
+          
+          # 备用方案：使用 curl + jq
+          if [ -z "$LATEST_TAG" ]; then
+            echo "Trying backup method with curl..."
+            LATEST_TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | \
+              jq -r '.tag_name')
+            echo "latest-tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+            echo "Latest tag (backup): ${LATEST_TAG}"
+          fi
         fi
 
     - name: download meta core
@@ -146,6 +178,21 @@ jobs:
     - name: create zip
       run: ditto -c -k --sequesterRsrc --keepParent archive/ClashX.xcarchive/Products/Applications/ClashX\ Meta.app "ClashX Meta.zip"
 
+    - name: Update mihomo version file
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        # 将当前使用的 mihomo 版本写入文件
+        echo "${{ steps.get-tag.outputs.latest-tag }}" > .mihomo-version
+        
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        
+        # 提交版本文件到仓库
+        git add .mihomo-version
+        if ! git diff --cached --quiet; then
+          git commit -m "Update mihomo version to ${{ steps.get-tag.outputs.latest-tag }}"
+          git push origin HEAD:meta || git push origin HEAD:main || echo "Failed to push version file, but continuing..."
+        fi
 
     - name: upload Artifact
       uses: actions/upload-artifact@v4
