@@ -21,6 +21,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
 
     - name: Check MetaCubeX/mihomo updates
       id: check
@@ -179,7 +180,7 @@ jobs:
       run: ditto -c -k --sequesterRsrc --keepParent archive/ClashX.xcarchive/Products/Applications/ClashX\ Meta.app "ClashX Meta.zip"
 
     - name: Update mihomo version file
-      if: startsWith(github.ref, 'refs/tags/')
+      if: startsWith(github.ref, 'refs/tags/') || needs.check-meta-update.outputs.has-update == 'true'
       run: |
         # 将当前使用的 mihomo 版本写入文件
         echo "${{ steps.get-tag.outputs.latest-tag }}" > .mihomo-version
@@ -203,20 +204,27 @@ jobs:
 
     - name: load sparkle-repo
       uses: actions/checkout@v4
-      if: startsWith(github.ref, 'refs/tags/')
+      if: startsWith(github.ref, 'refs/tags/') || needs.check-meta-update.outputs.has-update == 'true'
       with:
         ref: sparkle
         path: 'sparkle-repo'
 
     - name: update sparkle-repo
-      if: startsWith(github.ref, 'refs/tags/')
+      if: startsWith(github.ref, 'refs/tags/') || needs.check-meta-update.outputs.has-update == 'true'
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
+        # 获取正确的tag名称
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          TAG_NAME="${{ github.ref_name }}"
+        else
+          TAG_NAME=$(git tag -l "v*" --sort=-version:refname | head -1)
+        fi
+
         rm -f sparkle-repo/*.delta
 
-        cp "ClashX Meta.zip" "sparkle-repo/ClashX Meta $GITHUB_REF_NAME.zip"
+        cp "ClashX Meta.zip" "sparkle-repo/ClashX Meta ${TAG_NAME}.zip"
         
         brew install sparkle
         echo '${{ secrets.ED_KEY }}' | $(brew --prefix)/Caskroom/sparkle/2.*/bin/generate_appcast sparkle-repo --maximum-deltas 2 --auto-prune-update-files --ed-key-file -
@@ -227,7 +235,7 @@ jobs:
         git checkout --orphan temp-sparkle
 
         git add -A
-        git commit -m "Sparkle updates - $GITHUB_REF_NAME"
+        git commit -m "Sparkle updates - ${TAG_NAME}"
       
 
         git branch -D sparkle
@@ -236,12 +244,26 @@ jobs:
 
         git push --force-with-lease origin sparkle
 
+    - name: Get release tag name
+      id: release-tag
+      if: startsWith(github.ref, 'refs/tags/') || needs.check-meta-update.outputs.has-update == 'true'
+      run: |
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          # 手动打tag触发：直接使用github.ref
+          echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+        else
+          # 定时任务触发：获取最新创建的tag
+          LATEST_TAG=$(git tag -l "v*" --sort=-version:refname | head -1)
+          echo "tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+        fi
+
     - name: upload build to github
       uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
+      if: startsWith(github.ref, 'refs/tags/') || needs.check-meta-update.outputs.has-update == 'true'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
+        tag_name: ${{ steps.release-tag.outputs.tag }}
         generate_release_notes: true
         files: |
           ClashX Meta.zip
