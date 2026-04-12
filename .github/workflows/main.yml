@@ -145,7 +145,11 @@ jobs:
       uses: robinraju/release-downloader@v1.12
       with:
         repository: 'MetaCubeX/mihomo'
+<<<<<<< HEAD
         tag: ${{ steps.get-tag.outputs.latest-tag }}
+=======
+        tag: "v1.19.23"
+>>>>>>> b33e4ad4b5938a98aa5c44b3914ea6602e1af147
         fileName: "mihomo-darwin-???64-v?.*.*.gz"
         out-file-path: "clash.meta"
         token: ${{ secrets.GITHUB_TOKEN }}
@@ -227,7 +231,7 @@ jobs:
         cp "ClashX Meta.zip" "sparkle-repo/ClashX Meta ${TAG_NAME}.zip"
         
         brew install sparkle
-        echo '${{ secrets.ED_KEY }}' | $(brew --prefix)/Caskroom/sparkle/2.*/bin/generate_appcast sparkle-repo --maximum-deltas 2 --auto-prune-update-files --ed-key-file -
+        echo '${{ secrets.ED_KEY }}' | $(brew --prefix)/Caskroom/sparkle/2.*/bin/generate_appcast sparkle-repo --maximum-versions 1 --maximum-deltas 2 --auto-prune-update-files --ed-key-file -
         
         cd sparkle-repo
         rm -rf old_updates

@@ -5,7 +5,6 @@
 //
 
 import SwiftUI
-import DSFSparkline
 
 struct OverviewView: View {
 	

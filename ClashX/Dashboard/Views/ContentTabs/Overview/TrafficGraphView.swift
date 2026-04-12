@@ -5,144 +5,212 @@
 //
 
 import SwiftUI
-import DSFSparkline
+import AppKit
+import DGCharts
 
 fileprivate let labelsCount = 4
 
 struct TrafficGraphView: View {
 	@Binding var values: [CGFloat]
-	@State var graphColor: DSFColor
-	
-	init(values: Binding<[CGFloat]>,
-		 graphColor: DSFColor) {
-		self._values = values
-		self.graphColor = graphColor
-	}
-	
-	
-	@State private var labels = [String]()
-	@State private var dataSource = DSFSparkline.DataSource()
-	@State private var currentMaxValue: CGFloat = 0
+	let graphColor: NSColor
 	
     var body: some View {
-		HStack {
-			VStack {
-				ForEach(labels, id: \.self) {
-					Text($0)
-						.font(.system(size: 11, weight: .light))
-					Spacer()
-				}
-			}
-			graphView
-		}
-		.onAppear {
-			updateChart(values)
-		}
-		.onChange(of: values) { newValue in
-			updateChart(newValue)
-		}
-		
+		let scale = chartScale(for: values)
+
+		TrafficLineChartRepresentable(
+			values: values,
+			graphColor: graphColor,
+			scale: scale
+		)
     }
-	
-	var graphView: some View {
-		ZStack {
-			DSFSparklineLineGraphView.SwiftUI(
-				dataSource: dataSource,
-				graphColor: graphColor,
-				interpolated: false,
-				showZeroLine: false
-			)
-			
-			DSFSparklineSurface.SwiftUI([
-				gridOverlay
-			])
+
+	private func chartScale(for values: [CGFloat]) -> TrafficScale {
+		let peakValue = values.max() ?? CGFloat(labelsCount) * 1000
+		let unit = chartUnit(for: Double(peakValue))
+		let maxValueInUnit = Double(peakValue) / unit.divisor
+		let minimumScaleValue = unit == .kilobytesPerSecond ? Double(labelsCount) : 0
+		let baselineMaxValue = Swift.max(maxValueInUnit, minimumScaleValue)
+		let step = niceStep(for: baselineMaxValue / Double(labelsCount))
+		let upperValue = step * Double(labelsCount)
+
+		return TrafficScale(
+			upperBound: CGFloat(upperValue * unit.divisor),
+			unit: unit
+		)
+	}
+
+	private func chartUnit(for value: Double) -> TrafficUnit {
+		switch value {
+		case ..<1_000_000:
+			return .kilobytesPerSecond
+		case ..<1_000_000_000:
+			return .megabytesPerSecond
+		default:
+			return .gigabytesPerSecond
 		}
 	}
-	
-	let gridOverlay: DSFSparklineOverlay = {
-		let grid = DSFSparklineOverlay.GridLines()
-		grid.dataSource = .init(values: [1], range: 0...1)
-		
-		
-		var floatValues = [CGFloat]()
-		for i in 0...labelsCount {
-			floatValues.append(CGFloat(i) / CGFloat(labelsCount))
-		}
-		let _ = floatValues.removeFirst()
-		
-		grid.floatValues = floatValues.reversed()
-		
-		grid.strokeColor = DSFColor.systemGray.withAlphaComponent(0.3).cgColor
-		grid.strokeWidth = 0.5
-		grid.dashStyle = [2, 2]
 
-		return grid
-	}()
-	
-	
-	func updateChart(_ values: [CGFloat]) {
-		let max = values.max() ?? CGFloat(labelsCount) * 1000
-		
-		if currentMaxValue != 0 && currentMaxValue == max {
-			self.dataSource.set(values: values)
-			return
-		} else {
-			currentMaxValue = max
-		}
-		
-		let byte = Int64(max)
-		let kb = byte / 1000
-		
-		var v1: Double = 0
-		var v2 = ""
-		var v3: Double = 1
-		
-		switch kb {
-		case 0..<Int64(labelsCount):
-			v1 = Double(labelsCount)
-			v2 = "KB/s"
-		case Int64(labelsCount)..<100:
-			// 0 - 99 KB/s
-			v1 = Double(kb)
-			v2 = "KB/s"
-		case 100..<100_000:
-			// 0.1 - 99MB/s
-			v1 = Double(kb) / 1_000
-			v2 = "MB/s"
-			v3 = 1_000
+	private func niceStep(for rawStep: Double) -> Double {
+		guard rawStep > 0 else { return 1 }
+
+		let exponent = floor(log10(rawStep))
+		let base = pow(10, exponent)
+		let fraction = rawStep / base
+
+		let niceFraction: Double
+		switch fraction {
+		case ...1:
+			niceFraction = 1
+		case ...2:
+			niceFraction = 2
+		case ...5:
+			niceFraction = 5
 		default:
-			// case 10_000..<100_000:
-			// 0.1 - 10GB/s
-			v1 = Double(kb) / 1_000_000
-			v2 = "GB/s"
-			v3 = 1_000_000
+			niceFraction = 10
 		}
-		
-		let vv = Double(labelsCount) / 10
-		
-		if v1.truncatingRemainder(dividingBy: vv) != 0 {
-			v1 = Double((Int(v1 / vv) + 1)) * vv
+
+		return niceFraction * base
+	}
+
+}
+
+private struct TrafficScale {
+	let upperBound: CGFloat
+	let unit: TrafficUnit
+}
+
+private enum TrafficUnit: String {
+	case kilobytesPerSecond = "KB/s"
+	case megabytesPerSecond = "MB/s"
+	case gigabytesPerSecond = "GB/s"
+
+	var divisor: Double {
+		switch self {
+		case .kilobytesPerSecond:
+			return 1_000
+		case .megabytesPerSecond:
+			return 1_000_000
+		case .gigabytesPerSecond:
+			return 1_000_000_000
 		}
-		
-		var re = [String]()
-		
-		for i in 0...labelsCount {
-			let s = String(format: "%.1f%@", v1 * Double(i) / Double(labelsCount), v2)
-			re.append(s)
-		}
-		re = re.reversed()
-		let _ = re.removeLast()
-		
-		let upperBound = CGFloat(v1*v3*1000)
-		
-		self.dataSource.set(values: values)
-		self.dataSource.setRange(lowerBound: 0, upperBound: upperBound)
-		self.labels = re
 	}
 }
 
-//struct TrafficGraphView_Previews: PreviewProvider {
-//    static var previews: some View {
-//        TrafficGraphView()
-//    }
-//}
+private struct TrafficLineChartRepresentable: NSViewRepresentable {
+	var values: [CGFloat]
+	var graphColor: NSColor
+	var scale: TrafficScale
+
+	func makeNSView(context: Context) -> TrafficLineChartView {
+		let chartView = TrafficLineChartView()
+		configure(chartView)
+		return chartView
+	}
+
+	func updateNSView(_ chartView: TrafficLineChartView, context: Context) {
+		update(chartView)
+	}
+
+	private func configure(_ chartView: TrafficLineChartView) {
+		chartView.chartDescription.enabled = false
+		chartView.legend.enabled = false
+		chartView.dragEnabled = false
+		chartView.setScaleEnabled(false)
+		chartView.noDataText = ""
+		chartView.minOffset = 8
+		chartView.wantsLayer = true
+		chartView.layer?.backgroundColor = NSColor.clear.cgColor
+
+		chartView.xAxis.enabled = false
+		chartView.leftAxis.enabled = true
+		chartView.leftAxis.drawLabelsEnabled = true
+		chartView.leftAxis.drawAxisLineEnabled = false
+		chartView.leftAxis.drawGridLinesEnabled = true
+		chartView.leftAxis.gridColor = NSColor.systemGray.withAlphaComponent(0.3)
+		chartView.leftAxis.gridLineWidth = 0.5
+		chartView.leftAxis.setLabelCount(labelsCount + 1, force: true)
+		chartView.leftAxis.gridLineDashLengths = [2, 2]
+		chartView.leftAxis.gridLineDashPhase = 0
+		chartView.leftAxis.labelFont = .monospacedDigitSystemFont(ofSize: 11, weight: .light)
+		chartView.leftAxis.labelTextColor = .secondaryLabelColor
+		chartView.leftAxis.xOffset = 4
+		chartView.rightAxis.enabled = false
+	}
+
+	private func update(_ chartView: TrafficLineChartView) {
+		let chartEntries = values.enumerated().map {
+			ChartDataEntry(x: Double($0.offset), y: Double($0.element))
+		}
+
+		let dataSet = LineChartDataSet(entries: chartEntries, label: "")
+		dataSet.colors = [graphColor]
+		dataSet.lineWidth = 1.5
+		dataSet.mode = .horizontalBezier
+		dataSet.drawValuesEnabled = false
+		dataSet.drawCirclesEnabled = false
+		dataSet.highlightEnabled = false
+
+		let data = LineChartData(dataSet: dataSet)
+		data.setDrawValues(false)
+		chartView.data = data
+
+		let axisUpperBound = Double(max(scale.upperBound, 1))
+		chartView.leftAxis.axisMaximum = axisUpperBound
+		chartView.leftAxis.axisMinimum = 0
+		chartView.leftAxis.valueFormatter = TrafficAxisValueFormatter(unit: scale.unit)
+		chartView.leftAxis.granularityEnabled = true
+		chartView.leftAxis.granularity = axisUpperBound / Double(labelsCount)
+
+		chartView.xAxis.axisMinimum = 0
+		chartView.xAxis.axisMaximum = Double(max(values.count - 1, 1))
+		chartView.notifyDataSetChanged()
+	}
+}
+
+private final class TrafficAxisValueFormatter: AxisValueFormatter {
+	private let unit: TrafficUnit
+	private let formatter: NumberFormatter
+
+	init(unit: TrafficUnit) {
+		self.unit = unit
+		self.formatter = NumberFormatter()
+		formatter.numberStyle = .decimal
+		formatter.minimumFractionDigits = 0
+		formatter.maximumFractionDigits = 1
+		formatter.usesGroupingSeparator = false
+	}
+
+	func stringForValue(_ value: Double, axis: AxisBase?) -> String {
+		guard value > 0 else { return "" }
+
+		let scaledValue = value / unit.divisor
+		let maximumFractionDigits = scaledValue < 1 ? 2 : 1
+		formatter.maximumFractionDigits = maximumFractionDigits
+		let text = formatter.string(from: NSNumber(value: scaledValue)) ?? String(format: "%.1f", scaledValue)
+		return text + unit.rawValue
+	}
+}
+
+private final class TrafficLineChartView: LineChartView {
+	override var intrinsicContentSize: NSSize {
+		NSSize(width: NSView.noIntrinsicMetric, height: 120)
+	}
+}
+
+struct TrafficGraphView_Previews: PreviewProvider {
+	static var previews: some View {
+		VStack(spacing: 16) {
+			TrafficGraphView(
+				values: .constant([12_000, 28_000, 35_000, 22_000, 48_000, 64_000, 40_000, 72_000]),
+				graphColor: .systemBlue
+			)
+
+			TrafficGraphView(
+				values: .constant([2_000, 4_500, 3_500, 8_000, 6_500, 12_000, 9_000, 15_000]),
+				graphColor: .systemGreen
+			)
+		}
+		.padding()
+		.frame(width: 360)
+	}
+}
